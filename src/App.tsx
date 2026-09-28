@@ -3,6 +3,7 @@ import { ProcessSimulation } from './engine/simEngine';
 import { SCENARIO_PRESETS } from './engine/presets';
 import { Navbar } from './components/Navbar';
 import { ScopeChart } from './components/ScopeChart';
+import { TuningControlPanel } from './components/TuningControlPanel';
 import { Lab1ProcessTypes } from './components/Lab1ProcessTypes';
 import { Lab2Robustness } from './components/Lab2Robustness';
 import { Lab3OpenLoopTuning } from './components/Lab3OpenLoopTuning';
@@ -138,6 +139,8 @@ export function App() {
               }
               moduleTitle={`ILM 310305dB • ${activePreset?.name || 'Digital Controller Tuning'}`}
             />
+            {/* Interactive Gains Console & KaTeX Loop Tuning Suggestions Advisor */}
+            <TuningControlPanel sim={sim} />
           </div>
         )}
 

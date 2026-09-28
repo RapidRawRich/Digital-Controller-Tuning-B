@@ -24,9 +24,18 @@ export const Formula: React.FC<FormulaProps> = ({
     }
   }, [tex, displayMode]);
 
+  if (displayMode) {
+    return (
+      <div
+        className={`my-2 py-1 w-full overflow-x-auto overflow-y-hidden text-center [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${className}`}
+        dangerouslySetInnerHTML={{ __html: html }}
+      />
+    );
+  }
+
   return (
     <span
-      className={`inline-block overflow-x-auto align-middle ${displayMode ? 'my-1 py-1 w-full text-center' : ''} ${className}`}
+      className={`inline align-baseline overflow-visible select-text ${className}`}
       dangerouslySetInnerHTML={{ __html: html }}
     />
   );

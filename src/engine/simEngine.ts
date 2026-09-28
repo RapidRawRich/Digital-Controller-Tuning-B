@@ -93,8 +93,29 @@ export class ProcessSimulation {
     this.lastSampleTime = 0;
   }
 
+  // Observer listeners for parameter updates
+  private listeners: Array<() => void> = [];
+
+  public subscribe(fn: () => void): () => void {
+    this.listeners.push(fn);
+    return () => {
+      this.listeners = this.listeners.filter(l => l !== fn);
+    };
+  }
+
+  private notify(): void {
+    for (const fn of this.listeners) {
+      try {
+        fn();
+      } catch (err) {
+        console.error('Error in ProcessSimulation listener:', err);
+      }
+    }
+  }
+
   public updateProcess(newParams: Partial<ProcessParams>): void {
     this.processParams = { ...this.processParams, ...newParams };
+    this.notify();
   }
 
   public updateController(newParams: Partial<ControllerParams>): void {
@@ -103,18 +124,22 @@ export class ProcessSimulation {
     if (newParams.mode !== undefined) {
       this.isManual = newParams.mode === 'MANUAL';
     }
+    this.notify();
   }
 
   public setSetpoint(sp: number): void {
     this.targetSP = sp;
+    this.notify();
   }
 
   public setLoadDisturbance(load: number): void {
     this.loadDisturbance = load;
+    this.notify();
   }
 
   public setTransientDisturbance(trans: number): void {
     this.transientDisturbance = trans;
+    this.notify();
   }
 
   public setManualMode(manual: boolean, coValue?: number): void {
@@ -124,11 +149,13 @@ export class ProcessSimulation {
       this.controller.setManualOutput(coValue);
     }
     this.controllerParams.mode = manual ? 'MANUAL' : (this.controllerParams.mode === 'MANUAL' ? 'PI' : this.controllerParams.mode);
+    this.notify();
   }
 
   public setManualCO(co: number): void {
     this.manualCO = Math.max(0, Math.min(100, co));
     this.controller.setManualOutput(this.manualCO);
+    this.notify();
   }
 
   public resetSimulation(sp: number = 50, pv: number = 50): void {
@@ -142,6 +169,7 @@ export class ProcessSimulation {
     this.manualCO = this.controllerParams.bias;
     this.controller.reset(sp, pv);
     this.preSeedHistory(8.0);
+    this.notify();
   }
 
   public getTelemetry(): TelemetryPoint[] {

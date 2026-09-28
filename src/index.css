@@ -32,3 +32,15 @@ body {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   font-variant-numeric: tabular-nums;
 }
+
+/* Ensure KaTeX inline math never triggers browser scrollbars or thumb artifacts */
+.katex,
+.katex * {
+  scrollbar-width: none !important;
+}
+.katex::-webkit-scrollbar,
+.katex *::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
