@@ -10,12 +10,13 @@ import { Lab4ClosedLoopTuning } from './components/Lab4ClosedLoopTuning';
 import { Lab5IndustrialLoops } from './components/Lab5IndustrialLoops';
 import { SelfTestQuiz } from './components/SelfTestQuiz';
 import { ReferenceHandbook } from './components/ReferenceHandbook';
-import { TelemetryPoint } from './types/simulation';
+import type { TelemetryPoint } from './types/simulation';
 
 export function App() {
   const [activeTab, setActiveTab] = useState<string>('lab1');
   const [selectedPresetId, setSelectedPresetId] = useState<string>('lab1-self-regulating');
   const [isRunning, setIsRunning] = useState<boolean>(true);
+  const [simSpeed, setSimSpeed] = useState<number>(1);
   const [telemetry, setTelemetry] = useState<TelemetryPoint[]>([]);
 
   // Simulation engine instance
@@ -75,7 +76,7 @@ export function App() {
     setTelemetry([...sim.getTelemetry()]);
   };
 
-  // Main high-frequency continuous simulation loop (20Hz to 60Hz physics clock)
+  // Main high-frequency continuous simulation loop
   useEffect(() => {
     if (!sim) return;
 
@@ -90,9 +91,9 @@ export function App() {
       lastTime = currentTime;
 
       if (isRunning && elapsedSec > 0 && elapsedSec < 0.25) {
-        // Advance simulation in fractional minutes
-        // Scale: 1 real second = 0.5 simulated minute (speeds up long time constant demonstration)
-        const simDtMinutes = (elapsedSec * 0.4) / 60;
+        // Real-time process seconds: elapsedSec * simSpeed
+        // Convert to minutes for differential equations
+        const simDtMinutes = (elapsedSec * simSpeed) / 60;
         sim.step(simDtMinutes);
         setTelemetry([...sim.getTelemetry()]);
       }
@@ -102,7 +103,7 @@ export function App() {
 
     animId = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(animId);
-  }, [isRunning, sim]);
+  }, [isRunning, sim, simSpeed]);
 
   const activePreset = SCENARIO_PRESETS.find(p => p.id === selectedPresetId);
 
@@ -125,6 +126,8 @@ export function App() {
               isRunning={isRunning}
               onTogglePlay={handleTogglePlay}
               onReset={handleReset}
+              simSpeed={simSpeed}
+              onSimSpeedChange={setSimSpeed}
               statusBadgeText={activePreset ? activePreset.name : 'DCS ACTIVE'}
               statusBadgeColor={
                 activePreset?.process.type === 'runaway'

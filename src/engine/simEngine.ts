@@ -1,4 +1,4 @@
-import { ProcessParams, ControllerParams, TelemetryPoint, ProcessType } from '../types/simulation';
+import type { ProcessParams, ControllerParams, TelemetryPoint } from '../types/simulation';
 import { PIDController } from './controller';
 
 export class ProcessSimulation {
@@ -21,12 +21,13 @@ export class ProcessSimulation {
   private valveStem: number = 40;
 
   // Dead time circular buffer
-  // stores { time, co } points
   private deadTimeQueue: Array<{ time: number; stem: number }> = [];
 
   // Telemetry rolling buffer for strip chart
   private history: TelemetryPoint[] = [];
-  private maxHistoryPoints: number = 6000; // e.g. 5 minutes at 20Hz = 6000 points
+  private lastSampleTime: number = -999;
+  private sampleIntervalMin: number = 0.05 / 60; // 0.05s (20Hz) sample rate in minutes
+  private maxRetainedMinutes: number = 8.0; // Keep 8 full minutes of history (well exceeds 5m max window)
 
   constructor(
     processParams: ProcessParams,
@@ -46,15 +47,15 @@ export class ProcessSimulation {
 
     this.controller = new PIDController(controllerParams, initialSP, initialPV);
 
-    this.preSeedHistory(2.0); // pre-seed 2 minutes of steady-state baseline
+    this.preSeedHistory(8.0); // pre-seed 8 full minutes so 30s, 60s, 2m, and 5m windows are 100% full
   }
 
   /**
    * Pre-seed telemetry buffer so graphs are populated edge-to-edge on load
    */
-  public preSeedHistory(durationMinutes: number = 2.0): void {
-    const dt = 0.05 / 60; // 0.05 sec converted to minutes
-    const steps = Math.floor(durationMinutes / dt);
+  public preSeedHistory(durationMinutes: number = 8.0): void {
+    const dt = this.sampleIntervalMin;
+    const steps = Math.ceil(durationMinutes / dt);
     const startTime = -durationMinutes;
 
     this.history = [];
@@ -67,7 +68,7 @@ export class ProcessSimulation {
     this.pvFiltered = this.processParams.initialPV;
 
     // Fill dead time buffer
-    for (let t = startTime - this.processParams.tauD; t <= 0; t += dt) {
+    for (let t = startTime - Math.max(0.5, this.processParams.tauD * 2); t <= 0; t += dt) {
       this.deadTimeQueue.push({ time: t, stem: initialCO });
     }
 
@@ -89,6 +90,7 @@ export class ProcessSimulation {
     }
 
     this.simTime = 0;
+    this.lastSampleTime = 0;
   }
 
   public updateProcess(newParams: Partial<ProcessParams>): void {
@@ -139,7 +141,7 @@ export class ProcessSimulation {
     this.valveStem = this.controllerParams.bias;
     this.manualCO = this.controllerParams.bias;
     this.controller.reset(sp, pv);
-    this.preSeedHistory(2.0);
+    this.preSeedHistory(8.0);
   }
 
   public getTelemetry(): TelemetryPoint[] {
@@ -178,7 +180,7 @@ export class ProcessSimulation {
   }
 
   /**
-   * Advances simulation by dt minutes (e.g. 0.05s = 0.05/60 min)
+   * Advances simulation by dt minutes
    */
   public step(dt: number): TelemetryPoint {
     this.simTime += dt;
@@ -195,17 +197,13 @@ export class ProcessSimulation {
     const controllerCO = ctrlStep.co;
 
     // 2. Valve Stiction Model (Chou / Choudhury model)
-    // If stiction > 0, the valve stem sticks until the delta between CO and stem exceeds stiction.
-    // When slip occurs, it jumps forward by ~stiction * 0.85
     const stictionBand = this.processParams.stiction;
     if (stictionBand > 0) {
       const delta = controllerCO - this.valveStem;
       if (Math.abs(delta) > stictionBand) {
-        // Slip jump: jumps forward towards CO
         const slip = Math.sign(delta) * (Math.abs(delta) - stictionBand * 0.15);
         this.valveStem += slip;
       }
-      // If within stictionBand, stem does not move!
     } else {
       this.valveStem = controllerCO;
     }
@@ -238,29 +236,19 @@ export class ProcessSimulation {
     const baseCO = this.controllerParams.bias;
 
     if (type === 'self-regulating') {
-      // First-Order Plus Dead Time (FODT)
-      // tau1 * d(PV)/dt + (PV - ambientPV) = Kp * (effectiveCO + loadDisturbance - baseCO)
       const dPV = ((ambientPV + Kp * (effectiveCO + this.loadDisturbance - baseCO)) - this.pvActual) / Math.max(0.005, tau1);
       this.pvActual += dPV * dt;
     } else if (type === 'integrating') {
-      // Integrating Process (e.g. Liquid Level)
-      // d(PV)/dt = Ki * [ (effectiveCO + loadDisturbance) - balanceCO ]
-      // When effectiveCO == baseCO and load == 0, dPV/dt = 0
       const dPV = Ki * ((effectiveCO + this.loadDisturbance) - baseCO);
       this.pvActual += dPV * dt;
-      // Clamp to physical tank limits (0% to 100%)
       this.pvActual = Math.max(0, Math.min(100, this.pvActual));
     } else if (type === 'runaway') {
-      // Runaway Exothermic Reactor (Figure 4)
-      // Higher temperature increases reaction rate exponentially
-      // Cooling CO (cold oil) removes heat: -Kp * (effectiveCO - baseCO)
       const tempDeviation = this.pvActual - ambientPV;
       const reactionAcceleration = runawayAlpha * tempDeviation * (1 + 0.04 * Math.max(0, tempDeviation));
       const coolingRemoval = -Kp * (effectiveCO - baseCO);
       const disturbanceHeating = this.loadDisturbance * 1.5;
       const dPV = (reactionAcceleration + coolingRemoval + disturbanceHeating) / Math.max(0.01, tau1);
       this.pvActual += dPV * dt;
-      // Clamp runaway limits for safety (0% to 120%)
       this.pvActual = Math.max(0, Math.min(120, this.pvActual));
     }
 
@@ -283,7 +271,7 @@ export class ProcessSimulation {
     }
     const pvRawWithNoise = this.pvSensor + noise;
 
-    // 7. Transmitter Filtering (recommendation: 0.5 * controller scan rate)
+    // 7. Transmitter Filtering
     const tauFilt = this.controllerParams.transmitterFilterTau;
     if (tauFilt > 0) {
       const alphaFilt = dt / (tauFilt + dt);
@@ -292,14 +280,16 @@ export class ProcessSimulation {
       this.pvFiltered = pvRawWithNoise;
     }
 
-    // Transient disturbance naturally decays if it was an impulse/pulse
+    // Transient disturbance decay
     if (Math.abs(this.transientDisturbance) > 0.01) {
-      this.transientDisturbance *= Math.exp(-dt / 0.1); // 6 second decay
+      this.transientDisturbance *= Math.exp(-dt / 0.1);
     } else {
       this.transientDisturbance = 0;
     }
 
-    // 8. Record Telemetry Point
+    // 8. Record Telemetry Point at steady sample rate (or on big event)
+    const shouldRecordSample = (this.simTime - this.lastSampleTime) >= (this.sampleIntervalMin * 0.95);
+
     const point: TelemetryPoint = {
       time: this.simTime,
       sp: ctrlStep.softSP,
@@ -314,11 +304,22 @@ export class ProcessSimulation {
       loadDisturbance: this.loadDisturbance,
     };
 
-    this.history.push(point);
+    if (shouldRecordSample) {
+      this.lastSampleTime = this.simTime;
+      this.history.push(point);
 
-    // Keep history buffer bounded
-    if (this.history.length > this.maxHistoryPoints) {
-      this.history.splice(0, this.history.length - this.maxHistoryPoints);
+      // Time-based buffer pruning: keep at least 8.0 minutes of continuous history
+      const cutoffTime = this.simTime - this.maxRetainedMinutes;
+      // Only prune in batches to prevent array reallocation overhead
+      if (this.history.length > 12000 && this.history[0].time < cutoffTime) {
+        const removeCount = this.history.findIndex(p => p.time >= cutoffTime);
+        if (removeCount > 0) {
+          this.history.splice(0, removeCount);
+        }
+      }
+    } else if (this.history.length > 0) {
+      // Update latest point so crosshair and readouts are always real-time
+      this.history[this.history.length - 1] = point;
     }
 
     return point;

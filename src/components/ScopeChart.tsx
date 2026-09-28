@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useState, useMemo, useCallback } from 'react';
-import { TelemetryPoint } from '../types/simulation';
-import { Play, Pause, RotateCcw, Crosshair, Eye, Settings2, ZoomIn } from 'lucide-react';
+import type { TelemetryPoint } from '../types/simulation';
+import { Play, Pause, RotateCcw, Crosshair } from 'lucide-react';
 
 interface ScopeChartProps {
   telemetry: TelemetryPoint[];
@@ -12,7 +12,8 @@ interface ScopeChartProps {
   moduleTitle?: string;
   timeWindowSeconds?: number;
   onTimeWindowChange?: (sec: number) => void;
-  activeLabId?: string;
+  simSpeed?: number;
+  onSimSpeedChange?: (speed: number) => void;
 }
 
 export const ScopeChart: React.FC<ScopeChartProps> = ({
@@ -25,6 +26,8 @@ export const ScopeChart: React.FC<ScopeChartProps> = ({
   moduleTitle = 'ILM 310305dB • Digital Controller Tuning - Part B',
   timeWindowSeconds = 60,
   onTimeWindowChange,
+  simSpeed = 1,
+  onSimSpeedChange,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -101,7 +104,6 @@ export const ScopeChart: React.FC<ScopeChartProps> = ({
 
     // 1. Draw Grid lines and Y-axis scale
     ctx.lineWidth = 1 * dpr;
-    ctx.strokeStyle = '#1e293b';
     ctx.fillStyle = '#64748b';
     ctx.font = `${11 * dpr}px ui-monospace, SFMono-Regular, monospace`;
     ctx.textAlign = 'right';
@@ -122,14 +124,14 @@ export const ScopeChart: React.FC<ScopeChartProps> = ({
     }
 
     // Vertical X time grid lines
-    const timeStepSec = windowSec <= 60 ? 10 : (windowSec <= 120 ? 20 : 60);
+    const timeStepSec = windowSec <= 30 ? 5 : (windowSec <= 60 ? 10 : (windowSec <= 120 ? 20 : 60));
     const timeStepMin = timeStepSec / 60;
     const firstGridTime = Math.ceil(startTime / timeStepMin) * timeStepMin;
 
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
 
-    for (let t = firstGridTime; t <= latestTime; t += timeStepMin) {
+    for (let t = firstGridTime; t <= latestTime + 0.0001; t += timeStepMin) {
       const x = timeToX(t);
       if (x >= padL && x <= padL + plotW) {
         ctx.beginPath();
@@ -151,10 +153,24 @@ export const ScopeChart: React.FC<ScopeChartProps> = ({
     ctx.lineWidth = 1 * dpr;
     ctx.strokeRect(padL, padT, plotW, plotH);
 
-    // 2. Filter data within time window
-    const visibleData = telemetry.filter(
-      p => p.time >= startTime - 0.05 && p.time <= latestTime + 0.05
-    );
+    // 2. Extract visible data slice anchored from startTime to latestTime
+    let startIdx = 0;
+    for (let i = 0; i < telemetry.length; i++) {
+      if (telemetry[i].time >= startTime) {
+        startIdx = Math.max(0, i - 1);
+        break;
+      }
+    }
+    const rawVisible = telemetry.slice(startIdx);
+
+    // Ensure data is edge-to-edge: if first point starts after startTime, anchor it to startTime
+    const visibleData = [...rawVisible];
+    if (visibleData.length > 0 && visibleData[0].time > startTime) {
+      visibleData.unshift({
+        ...visibleData[0],
+        time: startTime,
+      });
+    }
 
     if (visibleData.length < 2) return;
 
@@ -174,7 +190,7 @@ export const ScopeChart: React.FC<ScopeChartProps> = ({
       ctx.strokeStyle = color;
       ctx.lineWidth = lineWidth * dpr;
       if (isDashed) {
-        ctx.setLineDash([6 * dpr, 4 * dpr]);
+        ctx.setLineDash([8 * dpr, 4 * dpr]);
       } else {
         ctx.setLineDash([]);
       }
@@ -203,8 +219,9 @@ export const ScopeChart: React.FC<ScopeChartProps> = ({
     if (showError) drawSignal(p => 50 + p.error, '#eab308', 1.5, true); // Yellow
     if (showValveStem) drawSignal(p => p.valveStem, '#fb923c', 1.8, true); // Orange
     if (showCO) drawSignal(p => p.co, '#06b6d4', 2.0, false); // Cyan
-    if (showSP) drawSignal(p => p.sp, '#f59e0b', 2.0, true);  // Amber dashed
     if (showPV) drawSignal(p => p.pv, '#10b981', 2.5, false); // Emerald solid
+    // Draw SP on top with distinct dashed pattern so it is visible even when overlapping PV
+    if (showSP) drawSignal(p => p.sp, '#f59e0b', 2.0, true);  // Amber dashed
 
     // 3. Draw Calipers if active
     if (caliperStart) {
@@ -292,7 +309,7 @@ export const ScopeChart: React.FC<ScopeChartProps> = ({
       const dpr = window.devicePixelRatio || 1;
       const rect = container.getBoundingClientRect();
       const cssWidth = rect.width;
-      const cssHeight = 360; // crisp standard SCADA chart height
+      const cssHeight = 360;
 
       canvas.width = cssWidth * dpr;
       canvas.height = cssHeight * dpr;
@@ -367,7 +384,6 @@ export const ScopeChart: React.FC<ScopeChartProps> = ({
 
     const hoverTime = startTime + ((mouseX - padL) / plotW) * windowMinutes;
 
-    // Find closest telemetry point
     let closest = telemetry[0];
     let minDiff = Math.abs(closest.time - hoverTime);
     for (let i = 1; i < telemetry.length; i++) {
@@ -424,6 +440,25 @@ export const ScopeChart: React.FC<ScopeChartProps> = ({
 
         {/* Right side: Fixed-width Anti-Jitter Control Buttons */}
         <div className="flex items-center gap-2 shrink-0">
+          {/* Simulation Speed Toggle */}
+          <div className="flex items-center bg-slate-900 border border-slate-800 rounded-lg p-0.5 text-xs">
+            {[0.5, 1, 2, 5].map(speed => (
+              <button
+                key={speed}
+                type="button"
+                onClick={() => onSimSpeedChange && onSimSpeedChange(speed)}
+                className={`px-1.5 py-1 rounded transition-colors ${
+                  simSpeed === speed
+                    ? 'bg-amber-500/20 text-amber-300 font-bold'
+                    : 'text-slate-500 hover:text-slate-300'
+                }`}
+                title={`Simulation Speed ${speed}x`}
+              >
+                {speed}x
+              </button>
+            ))}
+          </div>
+
           {/* Caliper Measurement Toggle */}
           <button
             type="button"
@@ -542,7 +577,7 @@ export const ScopeChart: React.FC<ScopeChartProps> = ({
             </span>
           </div>
 
-          {/* Valve Stem Position (if stiction is engaged) */}
+          {/* Valve Stem Position */}
           <div className="flex items-center gap-1.5 bg-slate-900/80 px-2 py-1 rounded border border-orange-500/20">
             <span className="w-2 h-2 rounded-full bg-orange-400" />
             <span className="text-slate-400 text-[11px] font-sans">Stem:</span>
